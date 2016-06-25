@@ -1,0 +1,13 @@
+<?php
+
+/**
+ * Implements hook_uninstall().
+ */
+function allstars_taxonomy_grid_uninstall() {
+  variable_del('allstars_taxonomy_grid_content_type');
+  variable_del('allstars_taxonomy_grid_horizontal_field');
+  variable_del('allstars_taxonomy_grid_vertical_field');
+  variable_del('allstars_taxonomy_grid_grid_view_mode');
+  variable_del('allstars_taxonomy_grid_block_view_mode');
+  variable_del('allstars_taxonomy_grid_block_selector');
+}
