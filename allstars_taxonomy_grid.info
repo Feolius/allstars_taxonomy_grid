@@ -1,0 +1,7 @@
+name = Allstars taxonomy grid
+description = "Provides a table with content type view grouped by two taxonomy term refernce fields."
+package = Allstars
+core = 7.x
+configure = admin/config/allstars/taxonomy_grid
+
+
