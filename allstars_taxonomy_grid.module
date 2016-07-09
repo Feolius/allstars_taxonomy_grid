@@ -11,7 +11,41 @@ function allstars_taxonomy_grid_menu() {
     'file' => 'allstars_taxonomy_grid.admin.inc',
     'access arguments' => array('administer site configuration'),
   );
+  $items['allstars/taxonomy_grid/node_view/%node'] = array(
+    'title callback' => 'node_page_title',
+    'title arguments' => array(3),
+    'page callback' => 'allstars_taxonomy_grid_ajax_node_view',
+    'page arguments' => array(3),
+    'access callback' => 'node_access',
+    'access arguments' => array('view', 3),
+  );
   return $items;
+}
+
+/**
+ * Page callback for returning rendered node content to be put in container wrapper.
+ */
+function allstars_taxonomy_grid_ajax_node_view($node) {
+  $block_view_mode = variable_get('allstars_taxonomy_grid_block_view_mode', FALSE);
+  $output = drupal_render(node_view($node, $block_view_mode));
+  print $output;
+  exit;
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function allstars_taxonomy_grid_entity_info_alter(&$entity_info) {
+  $entity_info['node']['view modes'] += array(
+    'allstars_taxonomy_grid_preview' => array(
+      'label' => t('AllStars Taxonomy Grid Preview'),
+      'custom settings' => TRUE,
+    ),
+    'allstars_taxonomy_grid_full' => array(
+      'label' => t('AllStars Taxonomy Grid Full'),
+      'custom settings' => TRUE,
+    ),
+  );
 }
 
 /**
@@ -30,7 +64,178 @@ function allstars_taxonomy_grid_block_info() {
 function allstars_taxonomy_grid_block_view($delta = '') {
   $block = array();
   if ($delta == 'taxonomy_grid') {
-    
+    $block['subject'] = '';
+    $is_configured = _allstars_taxonomy_grid_is_configuration_setup();
+    if ($is_configured) {
+      $vertical_field = variable_get('allstars_taxonomy_grid_vertical_field', FALSE);
+      $horizontal_field = variable_get('allstars_taxonomy_grid_horizontal_field', FALSE);
+      $grid = _allstars_taxonomy_grid_initialize_grid($vertical_field, $horizontal_field);
+
+      $grid_content_type = variable_get('allstars_taxonomy_grid_content_type', FALSE);
+      $query = new EntityFieldQuery();
+      $query
+        ->entityCondition('entity_type', 'node')
+        ->entityCondition('bundle', $grid_content_type);
+      $result = $query->execute();
+      $nodes = array();
+      if (isset($result['node'])) {
+        $nids = array_keys($result['node']);
+        $nodes = entity_load('node', $nids);
+      }
+
+      foreach ($nodes as $nid => $node) {
+        $vertical_field_items = field_get_items('node', $node, $vertical_field);
+        $horizontal_field_items = field_get_items('node', $node, $horizontal_field);
+        if (is_array($vertical_field_items) && is_array($horizontal_field_items)) {
+          foreach ($vertical_field_items as $vertical_field_item) {
+            $vertical_tid = $vertical_field_item['tid'];
+            foreach ($horizontal_field_items as $horizontal_field_item) {
+              $horizontal_tid = $horizontal_field_item['tid'];
+              if (isset($grid[$vertical_tid][$horizontal_tid])) {
+                array_push($grid[$vertical_tid][$horizontal_tid], $nid);
+              }
+            }
+          }
+        }
+      }
+
+      $block['content']['#markup'] = _allstars_taxonomy_grid_table_html($grid);
+      drupal_add_css(drupal_get_path('module', 'allstars_taxonomy_grid') . '/css/allstars_taxonomy_grid.css');
+      drupal_add_js(drupal_get_path('module', 'allstars_taxonomy_grid') . '/js/allstars_taxonomy_grid.js');
+      $wrapper_selector = variable_get('allstars_taxonomy_grid_block_selector', '');
+      drupal_add_js(array('allstarsTaxonomyGrid' => array('allstarsTaxonomyGridWrapperSelector' => $wrapper_selector)), 'setting');
+    } else {
+      $config_link = l(t('Configuration'), 'admin/config/allstars/taxonomy_grid');
+      $warning = 'Module is not configured properly. Please use configuration page to set up settings. ';
+      $block['content']['#markup'] = '<div class="messages error"> ' . $warning . $config_link .'</div>';
+
+    }
   }
   return $block;
+}
+
+/**
+ * Helper function. Checked whether module was configured or no.
+ */
+function _allstars_taxonomy_grid_is_configuration_setup() {
+  $grid_content_type = variable_get('allstars_taxonomy_grid_content_type', FALSE);
+  $vertical_field = variable_get('allstars_taxonomy_grid_vertical_field', FALSE);
+  $horizontal_field = variable_get('allstars_taxonomy_grid_horizontal_field', FALSE);
+  $grid_view_mode = variable_get('allstars_taxonomy_grid_grid_view_mode', FALSE);
+  $block_view_mode = variable_get('allstars_taxonomy_grid_block_view_mode', FALSE);
+  $wrapper_selector = variable_get('allstars_taxonomy_grid_block_selector', '');
+  $is_configured = FALSE;
+  if ($grid_content_type && $vertical_field && $horizontal_field &&
+    $grid_view_mode && $block_view_mode && $wrapper_selector) {
+    $is_configured = TRUE;
+  }
+  return $is_configured;
+}
+
+/**
+ * Helper function. Create empty two dimensional grid array using terms from
+ * vertical and horizontal fields.
+ * @return array. Outer keys are vertical tids, inner keys are horizontal keys.
+ */
+function _allstars_taxonomy_grid_initialize_grid($vertical_field, $horizontal_field) {
+  $grid = array();
+  $vertical_tids = _allstars_taxonomy_grid_get_tids_from_taxonomy_field($vertical_field);
+  $horizontal_tids = _allstars_taxonomy_grid_get_tids_from_taxonomy_field($horizontal_field);
+  foreach ($vertical_tids as $vertical_tid) {
+    foreach ($horizontal_tids as $horizontal_tid) {
+      $grid[$vertical_tid][$horizontal_tid] = array();
+    }
+  }
+  return $grid;
+}
+
+/**
+ * Helper function. Get terms variants from taxonomy field name.
+ * @return array tids.
+ */
+function _allstars_taxonomy_grid_get_tids_from_taxonomy_field($field_name) {
+  $tids = array();
+  $field_info = field_info_field($field_name);
+  if ($field_info && $field_info['type'] == 'taxonomy_term_reference') {
+    $vocabularies_names = array();
+    foreach ($field_info['settings']['allowed_values'] as $allowed_value_setting) {
+      $vocabularies_names[] = $allowed_value_setting['vocabulary'];
+    }
+    $vids = array();
+    if (!empty($vocabularies_names)) {
+      $query = new EntityFieldQuery();
+      $query
+        ->entityCondition('entity_type', 'taxonomy_vocabulary')
+        ->propertyCondition('machine_name', $vocabularies_names, 'IN')
+        ->entityOrderBy('entity_id');
+      $result = $query->execute();
+      if (isset($result['taxonomy_vocabulary'])) {
+        $vids = array_keys($result['taxonomy_vocabulary']);
+      }
+    }
+    if (!empty($vids)) {
+      $query = new EntityFieldQuery();
+      $query
+        ->entityCondition('entity_type', 'taxonomy_term')
+        ->propertyCondition('vid', $vids, 'IN')
+        ->propertyOrderBy('weight')
+        ->entityOrderBy('entity_id');
+      $result = $query->execute();
+      if (isset($result['taxonomy_term'])) {
+        $tids = array_keys($result['taxonomy_term']);
+      }
+    }
+  }
+  return $tids;
+}
+
+/**
+ * Helper function. Construct table html using grid data provided.
+ */
+function _allstars_taxonomy_grid_table_html($grid) {
+  $vertical_tids = array_keys($grid);
+  $horizontal_tids = array();
+  foreach ($grid as $horisontal_grid_data) {
+    $horizontal_tids = array_keys($horisontal_grid_data);
+    break;
+  }
+
+  $horizontal_terms = entity_load('taxonomy_term', $horizontal_tids);
+  $horizontal_labels = array();
+  foreach ($horizontal_terms as $horizontal_term) {
+    $horizontal_labels[] = t($horizontal_term->name);
+  }
+  array_unshift($horizontal_labels, '');
+  $table_data['header'] = $horizontal_labels;
+
+  $rows = array();
+  $grid_view_mode = variable_get('allstars_taxonomy_grid_grid_view_mode', FALSE);
+  $vertical_terms = entity_load('taxonomy_term', $vertical_tids);
+  foreach ($grid as $vertical_tid => $grid_row) {
+    if (isset($vertical_terms[$vertical_tid])) {
+      $row['data'] = array(
+        array(
+          'data' => t($vertical_terms[$vertical_tid]->name),
+          'header' => TRUE,
+        ),
+      );
+    } else {
+      // Exclude row if term doesn't exist. Ideally it shouldn't happen at all.
+      continue;
+    }
+    foreach ($grid_row as $horizontal_tid => $cell_nids) {
+      if (!empty($cell_nids)) {
+        $cell_nodes = entity_load('node', $cell_nids);
+        $nodes_view = node_view_multiple($cell_nodes, $grid_view_mode);
+        $row['data'][] = drupal_render($nodes_view);
+      } else {
+        $row['data'][] = '';
+      }
+    }
+    $rows[] = $row;
+  }
+  $table_data['rows'] = $rows;
+
+  $table_data['attributes'] = array('class' => array('allstars-taxonomy-grid'));
+  return '<div class="table-responsive">' . theme('table', $table_data) . '</div>';
 }
